@@ -1,0 +1,11 @@
+{
+  "agents": {
+    "claude":   { "name": "claude", "board": "#ff8c14" },
+    "codex":    { "name": "codex",  "board": "#2878ff" },
+    "my-agent": { "name": "mine",   "board": "#2ecc71" }
+  },
+  "detect_codex": true,
+  "bell": true,
+  "idle_to_sleep_min": 15,
+  "forget_after_hours": 6
+}
