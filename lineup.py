@@ -1504,20 +1504,46 @@ def _codex_files(now):
     return files
 
 
+_CODEX_STATE = {}   # log path -> {"off": bytes read, "last": last task event seen}
+
+
+def _codex_last_event(path):
+    """Last task_started / task_complete / turn_aborted in a Codex log, read incrementally.
+    A long task can write megabytes between its start and end, so we never rely on a fixed tail."""
+    st = _CODEX_STATE.setdefault(path, {"off": 0, "last": None})
+    try:
+        size = os.path.getsize(path)
+        if size < st["off"]:                      # rotated / rewritten
+            st.update(off=0, last=None)
+        if size > st["off"]:
+            with open(path, "rb") as fh:
+                start = st["off"]
+                if start == 0 and size > 16_000_000:
+                    start = size - 16_000_000       # first look at a huge log: the last 16 MB is plenty
+                fh.seek(max(0, start - 32))         # small overlap: an event name split across reads
+                chunk = fh.read()
+            st["off"] = size
+            found = max(((chunk.rfind(e), e) for e in CODEX_EVENTS), key=lambda x: x[0])
+            if found[0] >= 0:
+                st["last"] = found[1]
+    except OSError:
+        pass
+    return st["last"]
+
+
 def read_codex(now):
-    """(mood, label, [working session files]) - a session works if a task started and hasn't finished."""
+    """(mood, label, [working session files]). A session is working if its last task event is a
+    start - or, failing that, if the log is being written right now and hasn't said it finished."""
     working = []
     for f in _codex_files(now):
         try:
-            if now - os.path.getmtime(f) > 20 * 60:
-                continue
-            with open(f, "rb") as fh:
-                fh.seek(max(0, os.path.getsize(f) - 65536))
-                tail = fh.read()
+            age = now - os.path.getmtime(f)
         except OSError:
             continue
-        last = max(((tail.rfind(e), e) for e in CODEX_EVENTS), key=lambda x: x[0])
-        if last[0] >= 0 and last[1] == b'"task_started"':
+        if age > 20 * 60:
+            continue
+        last = _codex_last_event(f)
+        if last == b'"task_started"' or (last is None and age < 90):
             working.append(f)
     working.sort(key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0, reverse=True)
     if working:
