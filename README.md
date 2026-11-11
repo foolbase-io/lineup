@@ -112,6 +112,11 @@ Wrap any CLI agent:
 lineup report aider working "on it"; aider "$@"; lineup report aider idle "done - your turn"
 ```
 
+**Several sessions of one agent?** Each gets its own surfer: `claude`, `claude 2`, ... all on the
+agent's board colour, each with its own body colour (white, peach, mint, lavender...). The same goes
+for extra Codex sessions that are working, and for `lineup report --session`. Prefer one surfer per
+agent? Set `"split_sessions": false`.
+
 Reports are tiny JSON files in `~/.lineup/agents/`, so anything that can write a file can join the
 lineup. An agent that goes quiet falls asleep after 15 minutes and paddles off after 6 hours.
 

@@ -164,6 +164,7 @@ class Surfer:
     def __init__(self, aid, name, board, slot):
         self.id, self.name, self.board, self.slot = aid, name, board, slot
         self.home = 0.18 + 0.37 * slot          # phase seed so surfers don't move in lockstep
+        self.body = (255, 255, 255)              # body colour: tells sessions of one agent apart
         self.sx = self.sy = None
         self.svx = 0.0
         self.riding = self.ride_b = self.wipe = None
@@ -616,6 +617,7 @@ class Sea:
             sf.slot, sf.name, sf.board = slot, ag["name"], (*ag["board"], 1)
             sf.home = 0.18 + 0.37 * slot
             sf.mood, sf.label, sf.present = ag["mood"], ag.get("label", ""), True
+            sf.body = tuple(ag.get("body") or (255, 255, 255))
             seen.add(ag["id"])
         for k in list(self.surfers):
             if k not in seen:
@@ -975,6 +977,7 @@ class Sea:
             if not sf.present or sf.sx is None:
                 continue
             BRD = sf.board
+            WHT = (*sf.body[:3], 1)
             if sf.wipe:
                 w = sf.wipe
                 age = t - w["t0"]
@@ -1091,8 +1094,9 @@ class Sea:
                     x += 1
 
         DIM = (150, 172, 205)
+        taken = []                                     # (row, x0, x1) of tags already drawn
         if not self.compact or len(present) <= 2:
-            for o in present:
+            for o in sorted(present, key=lambda o: -PRIO.get(o.mood, 0)):   # most urgent tag wins
                 hx, hy = self.positions[o.id]
                 ty = hy - 1
                 if ty < 3:                              # never collide with the banner row
@@ -1100,7 +1104,15 @@ class Sea:
                 quip = personality(o)
                 segs = [(o.name, o.board)] + ([(": " + quip, DIM)] if quip and not self.compact else [])
                 n = sum(len(tx) for tx, _ in segs)
-                write(max(1, min(W - n - 1, hx - n // 2)), ty, segs)
+                x0 = max(1, min(W - n - 1, hx - n // 2))
+                if any(r == ty and x0 - 2 < b1 and a0 < x0 + n + 2 for r, a0, b1 in taken):
+                    segs = [(o.name, o.board)]             # crowded: just the name
+                    n = len(o.name)
+                    x0 = max(1, min(W - n - 1, hx - n // 2))
+                    if any(r == ty and x0 - 2 < b1 and a0 < x0 + n + 2 for r, a0, b1 in taken):
+                        continue                            # still overlapping: skip this tag
+                write(x0, ty, segs)
+                taken.append((ty, x0, x0 + n))
 
         for (x, y), (cc, col) in cells.items():       # surfers stay in front of their tags
             if 0 <= x < W and 0 <= y < H:
@@ -1218,7 +1230,10 @@ DEFAULT_CONFIG = {
     "idle_to_sleep_min": 15,
     "forget_after_hours": 6,
     "reduce_motion": False,
+    "split_sessions": True,     # one surfer per session (claude, claude 2, ...) with different body colours
 }
+BODY_TINTS = [(255, 255, 255), (255, 205, 160), (160, 240, 200), (205, 185, 255), (255, 238, 140), (150, 225, 255)]
+MAX_SESSIONS = 4
 
 
 def load_config():
@@ -1463,7 +1478,8 @@ def _codex_files(now):
 
 
 def read_codex(now):
-    """Working if any recent session has a task started but not finished."""
+    """(mood, label, [working session files]) - a session works if a task started and hasn't finished."""
+    working = []
     for f in _codex_files(now):
         try:
             if now - os.path.getmtime(f) > 20 * 60:
@@ -1475,15 +1491,19 @@ def read_codex(now):
             continue
         last = max(((tail.rfind(e), e) for e in CODEX_EVENTS), key=lambda x: x[0])
         if last[0] >= 0 and last[1] == b'"task_started"':
-            return "working", "on it"
-    return "idle", "chilling at the peak"
+            working.append(f)
+    working.sort(key=lambda f: os.path.getmtime(f) if os.path.exists(f) else 0, reverse=True)
+    if working:
+        return "working", "on it", working
+    return "idle", "chilling at the peak", []
 
 
-def codex_usage(now):
-    files = [(os.path.getmtime(f), f) for f in _codex_files(now) if os.path.exists(f)]
-    if not files:
-        return None
-    path = max(files)[1]
+def codex_usage(now, path=None):
+    if path is None:
+        files = [(os.path.getmtime(f), f) for f in _codex_files(now) if os.path.exists(f)]
+        if not files:
+            return None
+        path = max(files)[1]
     try:
         with open(path, "rb") as fh:
             fh.seek(max(0, os.path.getsize(path) - 400_000))
@@ -1521,11 +1541,12 @@ def codex_usage(now):
                 limits="  ".join(lim))
 
 
-def codex_last_text(now):
-    files = [(os.path.getmtime(f), f) for f in _codex_files(now) if os.path.exists(f)]
-    if not files:
-        return ""
-    path = max(files)[1]
+def codex_last_text(now, path=None):
+    if path is None:
+        files = [(os.path.getmtime(f), f) for f in _codex_files(now) if os.path.exists(f)]
+        if not files:
+            return ""
+        path = max(files)[1]
     try:
         with open(path, "rb") as fh:
             fh.seek(max(0, os.path.getsize(path) - 400_000))
@@ -1678,6 +1699,7 @@ DEMO = [   # (seconds per scene = 9) [(id, mood, label), ...]
     [("claude", "working", "editing lineup.py"), ("codex", "working", "running the tests")],
     [("claude", "working", "refactoring the reef"), ("codex", "working", "on it"), ("my-agent", "working", "indexing docs")],
     [("claude", "needs_you", "needs permission to run Bash"), ("codex", "working", "on it")],
+    [("claude", "working", "fixing the login bug"), ("claude#2", "working", "writing the docs"), ("codex", "idle", "chilling at the peak")],
     [("claude", "waiting", "waiting for your input"), ("my-agent", "idle", "")],
     [("claude", "sleeping", "drifted off waiting for you")],
 ]
@@ -1685,6 +1707,7 @@ DEMO_USAGE = {
     "claude": dict(model="opus 5.5", effort="", ctx=318_000, window=1_000_000, total=812_000, total_label="out", limits=""),
     "codex": dict(model="gpt 6", effort="high", ctx=156_000, window=258_400, total=4_242_619, total_label="total", limits="plus"),
     "my-agent": dict(model="my model", effort="", ctx=41_000, window=128_000, total=96_000, total_label="tok", limits=""),
+    "claude#2": dict(model="sonnet 5.5", effort="", ctx=64_000, window=1_000_000, total=120_000, total_label="out", limits=""),
 }
 
 
@@ -1698,15 +1721,29 @@ class Agents:
         self.cfg = load_config()
         self.order = list(self.cfg["agents"])          # configured agents keep their lineup spots
         self.poll_t = self.run_t = self.cx_t = self.use_t = 0.0
-        self.cached, self.codex_on, self.codex_mood = [], False, ("idle", "")
+        self.cached, self.codex_on, self.codex_mood = [], False, ("idle", "", [])
         self.usage, self.recs = {}, {}
+        self.seen = {}        # agent -> session keys in first-seen order (stable body colours)
 
     def _style(self, aid):
-        a = self.cfg["agents"].get(aid, {})
-        if aid not in self.order:
-            self.order.append(aid)
-        board = a.get("board") or PALETTE[self.order.index(aid) % len(PALETTE)]
-        return a.get("name") or aid, hex_rgb(board)
+        """(name, board) for an agent id; 'claude#<session>' styles like 'claude'."""
+        base = aid.split("#", 1)[0]
+        a = self.cfg["agents"].get(base, {})
+        for k in (base, aid):
+            if k not in self.order:
+                self.order.append(k)
+        board = a.get("board") or PALETTE[self.order.index(base) % len(PALETTE)]
+        return a.get("name") or base, hex_rgb(board)
+
+    def _session_look(self, base, key, shown_keys):
+        """Body colour fixed per session; name numbered among the sessions on screen."""
+        seen = self.seen.setdefault(base, [])
+        for k in list(shown_keys) + [key]:
+            if k is not None and k not in seen:
+                seen.append(k)
+        body = BODY_TINTS[seen.index(key) % len(BODY_TINTS)]
+        rank = sorted(shown_keys, key=seen.index).index(key) if len(shown_keys) > 1 else 0
+        return body, rank
 
     def poll(self, now):
         if self.demo:
@@ -1715,45 +1752,69 @@ class Agents:
             out = []
             for aid, mood, label in scene:
                 name, board = self._style(aid)
-                out.append(dict(id=aid, name=name, board=board, mood=mood, label=label, since=since,
-                                cwd="demo", sessions=1))
-            return sorted(out, key=lambda a: self.order.index(a["id"]))
+                n = int(aid.split("#")[1]) if "#" in aid else 1
+                out.append(dict(id=aid, name=name if n == 1 else f"{name} {n}", board=board, mood=mood, label=label,
+                                since=since, cwd="demo", sessions=1, body=BODY_TINTS[(n - 1) % len(BODY_TINTS)]))
+            return sorted(out, key=lambda a: (self.order.index(a["id"].split("#", 1)[0]), self.order.index(a["id"])))
         if now - self.poll_t < 0.25:
             return self.cached
         self.poll_t = now
         cfg = self.cfg
         forget = cfg.get("forget_after_hours", 6) * 3600
-        best, count = {}, {}
+        split = cfg.get("split_sessions", True)
+        groups = {}
         for r in read_reports(now, forget):
-            aid = r.get("agent", "agent")
-            count[aid] = count.get(aid, 0) + 1
-            cur = best.get(aid)
-            if cur is None or (PRIO.get(r.get("state"), 0), r.get("ts", 0)) > (PRIO.get(cur.get("state"), 0), cur.get("ts", 0)):
-                best[aid] = r
-        agents = []
+            groups.setdefault(r.get("agent", "agent"), []).append(r)
+        agents, recs = [], {}
         sleep_after = cfg.get("idle_to_sleep_min", 15) * 60
-        for aid, r in best.items():
-            mood, label, age = r.get("state", "idle"), r.get("label", ""), now - r.get("ts", now)
-            if mood in ("idle", "waiting") and age > sleep_after:
-                mood, label = "sleeping", "drifted off waiting for you"
-            elif mood == "working" and age > 30 * 60:
-                mood, label = "sleeping", "lost track (no updates for 30m)"
-            name, board = self._style(aid)
-            agents.append(dict(id=aid, name=name, board=board, mood=mood, label=label, since=r.get("since", now),
-                               cwd=r.get("cwd") or "", sessions=count[aid]))
-        self.recs = best
-        if cfg.get("detect_codex", True) and "codex" not in best:
+        for base, rs in groups.items():
+            looked = []
+            for r in rs:
+                mood, label, age = r.get("state", "idle"), r.get("label", ""), now - r.get("ts", now)
+                if mood in ("idle", "waiting") and age > sleep_after:
+                    mood, label = "sleeping", "drifted off waiting for you"
+                elif mood == "working" and age > 30 * 60:
+                    mood, label = "sleeping", "lost track (no updates for 30m)"
+                looked.append((mood, label, r))
+            looked.sort(key=lambda x: (PRIO.get(x[0], 0), x[2].get("ts", 0)), reverse=True)
+            if split:   # every awake session surfs; if they're all asleep, just the latest one naps
+                chosen = [x for x in looked if x[0] != "sleeping"][:MAX_SESSIONS] or \
+                         [max(looked, key=lambda x: x[2].get("ts", 0))]
+            else:
+                chosen = looked[:1]
+            keys = [str(x[2].get("session", "default")) for x in chosen]
+            name, board = self._style(base)
+            for (mood, label, r), key in zip(chosen, keys):
+                aid = f"{base}#{key}" if split else base
+                body, rank = self._session_look(base, key, keys) if split else ((255, 255, 255), 0)
+                agents.append(dict(id=aid, name=name if rank == 0 else f"{name} {rank + 1}", board=board,
+                                   body=body, mood=mood, label=label, since=r.get("since", now),
+                                   cwd=r.get("cwd") or "", sessions=len(rs)))
+                recs[aid] = r
+        self.recs = recs
+        if cfg.get("detect_codex", True) and "codex" not in groups:
             if now - self.run_t > 3.0:
                 self.codex_on, self.run_t = codex_running(), now
             if self.codex_on:
                 if now - self.cx_t > 1.0:
                     self.codex_mood, self.cx_t = read_codex(now), now
+                mood, label, files = self.codex_mood
                 name, board = self._style("codex")
-                agents.append(dict(id="codex", name=name, board=board, mood=self.codex_mood[0],
-                                   label=self.codex_mood[1], since=now, cwd="", sessions=1, auto="codex"))
+                keys = [os.path.basename(f)[-14:-6] for f in files][:MAX_SESSIONS] if split else []
+                # the main codex surfer always stays; extra *working* sessions paddle out next to him
+                main_key = keys[0] if keys else None
+                agents.append(dict(id="codex", name=name, board=board, mood=mood, label=label, since=now, cwd="",
+                                   sessions=max(1, len(keys)), auto="codex",
+                                   codex_file=files[0] if files else None,
+                                   body=self._session_look("codex", main_key, keys)[0] if main_key else BODY_TINTS[0]))
+                for i, key in enumerate(keys[1:], start=1):
+                    body, _ = self._session_look("codex", key, keys)
+                    agents.append(dict(id=f"codex#{key}", name=f"{name} {i + 1}", board=board, body=body,
+                                       mood="working", label="on it", since=now, cwd="", sessions=len(keys),
+                                       auto="codex", codex_file=files[i]))
         for a in agents:
             self._style(a["id"])
-        agents.sort(key=lambda a: self.order.index(a["id"]))
+        agents.sort(key=lambda a: (self.order.index(a["id"].split("#", 1)[0]), self.order.index(a["id"])))
         self.cached = agents
         return agents
 
@@ -1771,7 +1832,7 @@ class Agents:
                 if u is None and r:
                     u = report_usage(r)
                 if u is None and a.get("auto") == "codex":
-                    u = codex_usage(now)
+                    u = codex_usage(now, a.get("codex_file"))
                 if u:
                     usage[a["id"]] = u
             self.usage = usage
@@ -1786,7 +1847,7 @@ def agent_detail(ag, a, now):
         claude_usage(r["transcript"])
         result = _TRANSCRIPTS.get(r["transcript"], {}).get("text", "")
     elif a.get("auto") == "codex":
-        result = codex_last_text(now)
+        result = codex_last_text(now, a.get("codex_file"))
     elif r.get("detail"):
         result = str(r["detail"])
     if ag.demo:
