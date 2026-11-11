@@ -1948,7 +1948,8 @@ def fmt_age(sec):
 
 def _frame(sea, agents, ag, now, W, H, painter, opt, extra, dt):
     """One full frame: sea + info panel + status bar. Returns (ansi, rang_bell, sea_rows)."""
-    hud = hud_lines(agents, ag.get_usage(now, agents), W) if opt["info"] and not opt["compact"] else []
+    usage = ag.get_usage(now, agents)        # always: model names need it even when the panel is hidden
+    hud = hud_lines(agents, usage, W) if opt["info"] and not opt["compact"] else []
     if H - 1 - len(hud) < 10:
         hud = []
     rows = H - 1 - len(hud)
@@ -2060,6 +2061,9 @@ def run_stream(demo=False):
         inbuf += data
         while b"\n" in inbuf:
             line, inbuf = inbuf.split(b"\n", 1)
+            if os.environ.get("LINEUP_TRACE"):
+                with open(os.environ["LINEUP_TRACE"], "a") as tf:
+                    tf.write(line.decode(errors="ignore") + "\n")
             p = line.decode(errors="ignore").split()
             try:
                 if p[:1] == ["size"] and len(p) == 3:

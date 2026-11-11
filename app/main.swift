@@ -266,6 +266,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         startEngine()
         NSApp.activate(ignoringOtherApps: true)
 
+        if let keys = ProcessInfo.processInfo.environment["LINEUP_KEYS"] {      // self-test: press keys
+            for (k, ch) in keys.enumerated() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2 + Double(k) * 0.5) { self.handleKey(String(ch)) }
+            }
+        }
         if let i = CommandLine.arguments.firstIndex(of: "--card"), i + 1 < CommandLine.arguments.count {
             let id = CommandLine.arguments[i + 1]
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.send("detail \(id)") }
