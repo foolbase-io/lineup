@@ -170,6 +170,7 @@ class Surfer:
         self.row = None
         self.air = None      # launched off the lip: {"vx", "vy"}
         self.push = 0.0      # sideways shove from shaking the window (cols/s)
+        self.duck = None     # duck diving under a big wave: {"t0", "b"}
         self.mood, self.label, self.present = "idle", "", True
 
 
@@ -334,7 +335,13 @@ class Sea:
 
         # spawn breakers
         if t >= self.next_spawn:
-            h0 = self.par["brk"] * self.hmax * random.uniform(0.9, 1.06)
+            self.set_n = getattr(self, "set_n", 0) + 1
+            pos = self.set_n % 5                      # 5-wave cycle: lull, lull, building set...
+            size = (random.uniform(0.45, 0.6) if pos in (1, 2) else
+                    random.uniform(0.7, 0.85) if pos == 3 else random.uniform(0.85, 0.97))
+            if random.random() < 0.12:
+                size = random.uniform(0.98, 1.06)     # a bomb
+            h0 = self.par["brk"] * self.hmax * size
             if h0 >= 1.2:
                 b = Breaker(t, self.par["period"] * (1.5 if self.reduce else 1.0), h0, W)
                 b.riders, b.dropin = None, False   # claimed in the lineup when it arrives
@@ -379,12 +386,12 @@ class Sea:
                 b.crashed = True
                 on = [sf for sf in self.surfers.values()
                       if sf.present and sf.riding and sf.ride_b is b and sf.wipe is None]
-                if len(on) == 2 and b.dropin and random.random() < 0.45:
+                if len(on) == 2 and b.dropin and random.random() < 0.55:
                     for k, sf in enumerate(on):          # tangled up: both go down together
                         self._start_wipe(sf, t, direction=(-1 if k else 1), burst=True)
                 else:
                     for sf in on:
-                        if random.random() < 0.08:
+                        if random.random() < 0.14:
                             self._start_wipe(sf, t)
                 self.flash = 1.0 if self.state == "needs_you" and not self.reduce else self.flash
                 for q in self.qp:   # blow the question mark apart; it re-forms
@@ -601,7 +608,7 @@ class Sea:
                      if o is not sf and o.present and o.mood == "working" and self._waiting(o, W)]
             for b, g_ in zip(self.breakers, geoms):
                 p_, c_ = g_[0], g_[1]
-                if b.h0 < min(2.5, self.hmax * 0.6) or not 0.15 < p_ < 0.62:
+                if b.h0 < min(2.5, self.hmax * 0.4) or not 0.15 < p_ < 0.62:
                     continue
                 if b.riders is None:
                     if abs(c_ - sf.sx) > 4 + b.h0 * 0.3:
@@ -609,7 +616,7 @@ class Sea:
                     if self.next_turn not in (None, sf.id) and any(o.id == self.next_turn for o in ready):
                         continue                                          # their turn - let it pass
                     b.riders = [sf.id]
-                    if ready and random.random() < 0.15:                  # someone drops in on someone
+                    if ready and random.random() < 0.12:                  # someone drops in on someone
                         b.riders, b.dropin = [sf.id, random.choice(ready).id], True
                     self.next_turn = self._after(sf)
                 elif sf.id not in b.riders:
@@ -647,10 +654,34 @@ class Sea:
         sf.sx = max(3.0, min(W - 4.0, sf.sx))
         if dt > 0:
             sf.svx += ((sf.sx - old) / dt - sf.svx) * (1 - math.exp(-dt * 4))
+        # duck dive: a big wave about to land on a surfer who isn't riding it -> push the board under
+        if best:
+            sf.duck = None
+        elif sf.duck is None:
+            for b, g_ in zip(self.breakers, geoms):
+                c_, hb_ = g_[1], g_[2]
+                if hb_ >= max(2.5, self.hmax * 0.7) and 0 < sf.sx - c_ < 3 + hb_ * 0.3:
+                    if random.random() < 0.12:          # mistimed it: caught inside, washed back
+                        sf.push += random.uniform(7, 11)
+                        for _ in range(14):
+                            self.spray.append([sf.sx, sf.sy - 1, random.uniform(-4, 10), -random.uniform(6, 14), 0.9])
+                    else:
+                        sf.duck = dict(t0=t, b=b)
+                    break
+        else:
+            gone = sf.duck["b"] not in self.breakers
+            passed = (not gone) and sf.duck["b"].geom(t)[1] > sf.sx + 4
+            if gone or passed or t - sf.duck["t0"] > 1.8:
+                sf.duck = None                          # pop back up behind the wave
+                for _ in range(6):
+                    self.spray.append([sf.sx, sf.sy - 1, random.uniform(-3, 3), -random.uniform(3, 7), 0.5])
+            elif random.random() < dt * 10:
+                self.bubbles.append([sf.sx + random.uniform(-2, 2), sfc(sf.sx) + 1.5, 0.8])
+
         # sit on the average water height under the whole board (ignores chop spikes),
         # follow it gently, and only hop to a new text row once clearly past the midpoint
-        ty = sum(sfc(sf.sx + k) for k in range(-3, 4)) / 7.0
-        follow = 3.5 if sf.riding else 5.0
+        ty = sum(sfc(sf.sx + k) for k in range(-3, 4)) / 7.0 + (2.4 if sf.duck else 0.0)
+        follow = 9.0 if sf.duck else 3.5 if sf.riding else 5.0
         sf.sy = ty if sf.sy is None else sf.sy + (ty - sf.sy) * (1 - math.exp(-dt * follow))
         if sf.row is None or abs(sf.sy - sf.row) > 0.8:
             sf.row = int(round(sf.sy))
@@ -855,6 +886,12 @@ class Sea:
                     cells[(px - 1 if int(t * 4) % 2 else px + 1, py - 1)] = ("/" if int(t * 4) % 2 else "\\", WHT)
                 continue
             sx, by = int(round(sf.sx)), (sf.row if sf.row is not None else int(round(sf.sy)))
+            if sf.duck:
+                for j, cc in enumerate("<=====>"):
+                    put(sx - 3 + j, by, cc, mix(sf.board[:3], (40, 120, 200), 0.45))
+                for j, cc in enumerate("_O__"):
+                    put(sx - 2 + j, by - 1, cc, (200, 225, 245))
+                continue
             beat = int(t * 2.5 + sf.slot) % 2
             if sf.air:
                 body = ["\\ O /", "  |  ", " / \\ "]          # stomping an air
@@ -988,6 +1025,8 @@ def personality(o):
         return "wiped out!"
     if o.air:
         return "woo!"
+    if o.duck:
+        return "duck diving"
     if o.riding == "tube":
         return "in the barrel"
     if o.riding:
