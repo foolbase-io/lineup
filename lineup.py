@@ -1203,6 +1203,32 @@ def next_action(present, fallback=""):
     return [(fallback or "no agents in the water - connect one with `lineup report` or `lineup install`", D_)]
 
 
+VENDOR_WORDS = {"claude", "gpt", "openai", "anthropic", "chatgpt", "codex", "models", "latest", "preview", "instruct",
+                "chat", "high", "low", "medium", "xhigh", "mini", "thinking"}
+
+
+def short_model(model):
+    """'opus 5.5' -> 'opus', 'gpt 6.1 sol' -> 'sol', 'sonnet 5.5' -> 'sonnet', 'llama 4' -> 'llama'."""
+    words = [w for w in re.split(r"[\s\-_/:.]+", (model or "").lower()) if w]
+    for w in words:
+        if w not in VENDOR_WORDS and re.search(r"[a-z]", w) and not re.fullmatch(r"v?\d+[a-z]?", w):
+            return w
+    return re.sub(r"\s+", "", model or "")     # e.g. 'gpt 5' -> 'gpt5'
+
+
+def name_by_model(agents, usage):
+    """Rename surfers after their model; repeats become 'opus', 'opus 2', ... Agents without a known
+    model keep their agent name."""
+    counts = {}
+    for a in agents:
+        u = usage.get(a["id"]) or {}
+        m = short_model(u.get("model", ""))
+        base = m or a.get("agent_name", a["name"])
+        counts[base] = counts.get(base, 0) + 1
+        a["name"] = base if counts[base] == 1 else f"{base} {counts[base]}"
+    return agents
+
+
 def pretty_title(path):
     """'~/code/2026-01-31-surf-shop-9f8e7d6c' -> 'surf shop'."""
     base = os.path.basename((path or "").rstrip("/"))
@@ -1231,6 +1257,7 @@ DEFAULT_CONFIG = {
     "forget_after_hours": 6,
     "reduce_motion": False,
     "split_sessions": True,     # one surfer per session (claude, claude 2, ...) with different body colours
+    "name_by": "agent",         # "agent" (claude, codex) or "model" (opus, sonnet, sol, ...)
 }
 BODY_TINTS = [(255, 255, 255), (255, 205, 160), (160, 240, 200), (205, 185, 255), (255, 238, 140), (150, 225, 255)]
 MAX_SESSIONS = 4
@@ -1705,8 +1732,8 @@ DEMO = [   # (seconds per scene = 9) [(id, mood, label), ...]
 ]
 DEMO_USAGE = {
     "claude": dict(model="opus 5.5", effort="", ctx=318_000, window=1_000_000, total=812_000, total_label="out", limits=""),
-    "codex": dict(model="gpt 6", effort="high", ctx=156_000, window=258_400, total=4_242_619, total_label="total", limits="plus"),
-    "my-agent": dict(model="my model", effort="", ctx=41_000, window=128_000, total=96_000, total_label="tok", limits=""),
+    "codex": dict(model="gpt 6.1 sol", effort="high", ctx=156_000, window=258_400, total=4_242_619, total_label="total", limits="plus"),
+    "my-agent": dict(model="llama 4", effort="", ctx=41_000, window=128_000, total=96_000, total_label="tok", limits=""),
     "claude#2": dict(model="sonnet 5.5", effort="", ctx=64_000, window=1_000_000, total=120_000, total_label="out", limits=""),
 }
 
@@ -1724,6 +1751,7 @@ class Agents:
         self.cached, self.codex_on, self.codex_mood = [], False, ("idle", "", [])
         self.usage, self.recs = {}, {}
         self.seen = {}        # agent -> session keys in first-seen order (stable body colours)
+        self.name_by = self.cfg.get("name_by", "agent")
 
     def _style(self, aid):
         """(name, board) for an agent id; 'claude#<session>' styles like 'claude'."""
@@ -1734,6 +1762,15 @@ class Agents:
                 self.order.append(k)
         board = a.get("board") or PALETTE[self.order.index(base) % len(PALETTE)]
         return a.get("name") or base, hex_rgb(board)
+
+    def _names(self, agents, usage):
+        for a in agents:
+            a.setdefault("agent_name", a["name"])
+        if self.name_by == "model":
+            return name_by_model(agents, usage)
+        for a in agents:
+            a["name"] = a["agent_name"]
+        return agents
 
     def _session_look(self, base, key, shown_keys):
         """Body colour fixed per session; name numbered among the sessions on screen."""
@@ -1755,7 +1792,8 @@ class Agents:
                 n = int(aid.split("#")[1]) if "#" in aid else 1
                 out.append(dict(id=aid, name=name if n == 1 else f"{name} {n}", board=board, mood=mood, label=label,
                                 since=since, cwd="demo", sessions=1, body=BODY_TINTS[(n - 1) % len(BODY_TINTS)]))
-            return sorted(out, key=lambda a: (self.order.index(a["id"].split("#", 1)[0]), self.order.index(a["id"])))
+            out = sorted(out, key=lambda a: (self.order.index(a["id"].split("#", 1)[0]), self.order.index(a["id"])))
+            return self._names(out, {a["id"]: DEMO_USAGE.get(a["id"], {}) for a in out})
         if now - self.poll_t < 0.25:
             return self.cached
         self.poll_t = now
@@ -1815,7 +1853,7 @@ class Agents:
         for a in agents:
             self._style(a["id"])
         agents.sort(key=lambda a: (self.order.index(a["id"].split("#", 1)[0]), self.order.index(a["id"])))
-        self.cached = agents
+        self.cached = self._names(agents, self.usage)
         return agents
 
     def get_usage(self, now, agents):
@@ -1836,6 +1874,7 @@ class Agents:
                 if u:
                     usage[a["id"]] = u
             self.usage = usage
+            self._names(agents, usage)
         return self.usage
 
 
@@ -1900,7 +1939,8 @@ def _frame(sea, agents, ag, now, W, H, painter, opt, extra, dt):
 
 
 def _keys_hint(opt, app=False):
-    k = ["i info", f"m motion {'low' if opt['reduce'] else 'full'}", f"b bell {'on' if opt['bell'] else 'off'}"]
+    k = ["i info", f"n names: {opt.get('names', 'agent')}", f"m motion {'low' if opt['reduce'] else 'full'}",
+         f"b bell {'on' if opt['bell'] else 'off'}"]
     if app:
         k += ["c compact", "[ ] text size", f"t pin {'on' if opt['pinned'] else 'off'}", "click a surfer"]
     return "  |  ".join(k + ["q quit"])
@@ -1918,7 +1958,7 @@ def run(demo=False, truecolor=None, reduce=False):
     signal.signal(signal.SIGWINCH, lambda *_: resized.__setitem__(0, True))
     ag = Agents(demo)
     opt = dict(info=True, bell=ag.cfg.get("bell", True), reduce=reduce or ag.cfg.get("reduce_motion", False),
-               compact=False, pinned=False)
+               compact=False, pinned=False, names=ag.cfg.get("name_by", "agent"))
     sea = Sea("sleeping")
     last = time.time()
     try:
@@ -1949,6 +1989,9 @@ def run(demo=False, truecolor=None, reduce=False):
                         break
                     if k == b"b":
                         opt["bell"] = not opt["bell"]
+                    if k == b"n":
+                        ag.name_by = "agent" if ag.name_by == "model" else "model"
+                        opt["names"], ag.poll_t = ag.name_by, 0.0
                     if k == b"m":
                         opt["reduce"] = not opt["reduce"]
                     if k == b"i":
@@ -1977,7 +2020,7 @@ def run_stream(demo=False):
     W, H = 100, 30
     ag = Agents(demo)
     opt = dict(info=True, bell=ag.cfg.get("bell", True), reduce=ag.cfg.get("reduce_motion", False),
-               compact=False, pinned=False)
+               compact=False, pinned=False, names=ag.cfg.get("name_by", "agent"))
     sea = Sea("sleeping")
     last = time.time()
     want_detail = None
@@ -2003,6 +2046,9 @@ def run_stream(demo=False):
                     opt["pinned"] = p[1:] == ["on"]
                 elif p[:1] == ["motion"]:
                     opt["reduce"] = p[1:] == ["reduced"]
+                elif p[:1] == ["names"] and p[1:] in (["model"], ["agent"]):
+                    ag.name_by = opt["names"] = p[1]
+                    ag.poll_t = 0.0
                 elif p[:1] == ["compact"]:
                     opt["compact"] = p[1:] == ["on"]
                 elif p[:1] == ["detail"] and len(p) == 2:

@@ -17,5 +17,6 @@
   "bell": true,
   "idle_to_sleep_min": 15,
   "forget_after_hours": 6,
-  "split_sessions": true
+  "split_sessions": true,
+  "name_by": "agent"
 }

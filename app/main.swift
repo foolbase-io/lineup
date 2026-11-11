@@ -1,7 +1,7 @@
 // Lineup.app - a chrome-less, rounded, always-on-top window showing your agents surfing.
 // It runs lineup.py in `stream` mode and draws its frames natively.
 //
-// Keys:  q quit · i info · m reduced motion · c compact · [ ] text size · b bell · t pin · - / = transparency
+// Keys:  q quit · i info · n names (agent/model) · m reduced motion · c compact · [ ] text size · b bell · t pin · - / = transparency
 // Mouse: click a surfer for its card (question, latest result, changed files) · drag (or shake!) to move
 import AppKit
 
@@ -289,6 +289,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "q": NSApp.terminate(nil)
         case "b": send("bell")
         case "i": send("info")
+        case "n":
+            let next = (prefs.string(forKey: "nameBy") ?? "agent") == "model" ? "agent" : "model"
+            prefs.set(next, forKey: "nameBy")
+            send("names \(next)")
         case "m":
             reduceMotionPref.toggle()
             prefs.set(reduceMotionPref, forKey: "reduceMotion")
@@ -513,6 +517,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if pinned { send("pin on") }
         sendMotion()
         if compact { send("compact on") }
+        if let nb = prefs.string(forKey: "nameBy") { send("names \(nb)") }
     }
 
     func consume(_ d: Data) {

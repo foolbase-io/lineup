@@ -127,6 +127,7 @@ lineup. An agent that goes quiet falls asleep after 15 minutes and paddles off a
 | Key | Does |
 |---|---|
 | `i` | info panel (model / context / tokens) |
+| `n` | name surfers by agent (`claude`, `codex`) or by model (`opus`, `sonnet`, `sol`) |
 | `c` | compact strip |
 | `[` `]` | text size, so more fits in a small window |
 | `m` | reduced motion (also follows the macOS setting) |
@@ -138,7 +139,7 @@ lineup. An agent that goes quiet falls asleep after 15 minutes and paddles off a
 Click a surfer for its card. Drag (or shake!) the window to move it. Hover the status bar for the
 full project path.
 
-**Terminal:** `lineup` (`--demo`, `--reduce-motion`, `--256`), with keys `i`, `m`, `b`, `q`.
+**Terminal:** `lineup` (`--demo`, `--reduce-motion`, `--256`), with keys `i`, `n`, `m`, `b`, `q`.
 `lineup status` prints what Lineup sees right now, which is handy when wiring up a new agent.
 
 ## Configure
@@ -155,6 +156,7 @@ full project path.
   "detect_codex": true,
   "bell": true,
   "reduce_motion": false,
+  "name_by": "agent",
   "idle_to_sleep_min": 15,
   "forget_after_hours": 6
 }
