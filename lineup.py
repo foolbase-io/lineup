@@ -196,6 +196,7 @@ class Sea:
         self.shake_energy = 0.0
         self.fish = []
         self.bubbles = []   # [x, y, life]
+        self.egg = None     # rare easter egg in progress
         self.reef_top = []
         self.reef_cells = {}
 
@@ -446,10 +447,53 @@ class Sea:
         self.bubbles = [bb for bb in self.bubbles
                         if bb[2] > 0 and 0 <= int(bb[0]) < W and bb[1] > surf[int(bb[0])] + 0.5]
 
+
+        # ---- rare easter eggs (about one every few minutes)
+        egg = self.egg
+        if egg is None and not getattr(self, "reduce", False) and random.random() < dt / 150.0:
+            kinds = ["shark", "gull", "dolphin", "bottle"] + (["ufo", "ufo"] if self.state == "sleeping" else [])
+            k = random.choice(kinds)
+            if k == "shark":
+                egg = dict(kind=k, x=-4.0, vx=random.uniform(5, 8))
+            elif k == "gull":
+                egg = dict(kind=k, x=float(W + 3), vx=-random.uniform(9, 13),
+                           y=float(random.randint(3, max(3, int(self.base - self.hmax * 0.9) - 3))))
+            elif k == "dolphin":
+                egg = dict(kind=k, x=random.uniform(W * 0.15, W * 0.45), hops=random.randint(2, 3), ph=0.0)
+            elif k == "bottle":
+                egg = dict(kind=k, x=-3.0, vx=random.uniform(2.5, 4))
+            else:
+                egg = dict(kind=k, x=W * random.uniform(0.35, 0.65), y=2.0, age=0.0)
+            self.egg = egg
+        if egg is not None:
+            kind = egg["kind"]
+            if kind in ("shark", "gull", "bottle"):
+                egg["x"] += egg["vx"] * dt
+                if egg["x"] < -6 or egg["x"] > W + 6:
+                    self.egg = None
+            elif kind == "dolphin":
+                egg["ph"] += dt / 1.3
+                egg["x"] += 9 * dt
+                if egg["ph"] >= 1.0:
+                    xi = max(0, min(W - 1, int(egg["x"])))
+                    for _ in range(8):
+                        self.spray.append([egg["x"], surf[xi], random.uniform(-4, 4), -random.uniform(4, 9), 0.6])
+                    egg["ph"] = 0.0
+                    egg["hops"] -= 1
+                    if egg["hops"] <= 0 or egg["x"] > W - 4:
+                        self.egg = None
+            elif kind == "ufo":
+                egg["age"] += dt
+                if egg["age"] > 9:
+                    egg["x"] += 60 * dt                      # zoom off
+                    egg["y"] -= 8 * dt
+                    if egg["x"] > W + 10:
+                        self.egg = None
+
         def sfc(x):
             return surf[max(0, min(W - 1, int(x)))]
 
-        self._assign_spots()
+        self._assign_spots(W)
         for sf in self.surfers.values():
             if sf.present:
                 self._move_surfer(sf, dt, t, W, surf, geoms, g, sfc)
@@ -464,7 +508,13 @@ class Sea:
     def _home_x(self, sf, W):
         """Lineup spots: spot 0 is the peak, the rest further out, never on top of each other."""
         spot = sf.spot if getattr(sf, "spot", None) is not None else sf.slot
-        return max(4.0, W * 0.32 - spot * max(13.0, W * 0.14))
+        gap = max(13.0, W * 0.14)
+        peak = W * 0.32
+        x = peak - spot * gap
+        if x < 4.0:                       # out of room on the left: fill in to the right of the peak
+            k = int((peak - 4.0) // gap)  # spots that fit on the left
+            x = peak + (spot - k) * gap * 0.85
+        return max(4.0, min(W * 0.62, x))
 
     def _after(self, sf):
         """Whose turn is it after this surfer (round-robin over working agents)."""
@@ -476,7 +526,7 @@ class Sea:
         i = ids.index(sf.id) if sf.id in ids else -1
         return ids[(i + 1) % len(ids)]
 
-    def _assign_spots(self):
+    def _assign_spots(self, W):
         """Whoever is closer to the beach (further right) gets the spot nearer the peak, so a surfer
         paddling back never has to swim through someone sitting in the lineup."""
         free = [o for o in self.surfers.values()
@@ -484,10 +534,17 @@ class Sea:
         if not free:
             return
         free.sort(key=lambda o: -(o.wipe["bx"] if o.wipe else o.sx))
-        current = sorted(free, key=lambda o: (getattr(o, "spot", None) is None, getattr(o, "spot", None) or 0))
-        if [o.name for o in free] != [o.name for o in current] or any(getattr(o, "spot", None) is None for o in free):
-            for i, o in enumerate(free):
-                o.spot = i
+        probe = type("Spot", (), {})()
+        def spot_x(i):
+            probe.spot, probe.slot = i, i
+            return self._home_x(probe, W)
+        spots = sorted(range(len(free)), key=lambda i: -spot_x(i))   # spot indices, rightmost first
+        want = {o.id: spots[i] for i, o in enumerate(free)}
+        if any(getattr(o, "spot", None) != want[o.id] for o in free):
+            cur = sorted(free, key=lambda o: -spot_x(o.spot) if getattr(o, "spot", None) is not None else 0)
+            if [o.id for o in cur] != [o.id for o in free] or any(getattr(o, "spot", None) is None for o in free):
+                for o in free:
+                    o.spot = want[o.id]
 
     def _keep_apart(self, dt, W, gap=11.0):
         """Boards never overlap unless they're sharing a wave (drop-in) or someone is airborne."""
@@ -868,6 +925,45 @@ class Sea:
                         y = int(surf[x])
                         for yy in range(y, min(H, y + 1 + int(foam * 2 * edge + rnd()))):
                             put(x, yy, random.choice("@o*%#:'"), FOAM)
+
+
+        # ---- easter eggs
+        egg = self.egg
+        if egg is not None:
+            kind = egg["kind"]
+            if kind == "shark":
+                xi = int(round(egg["x"]))
+                sy = int(surf[max(0, min(W - 1, xi))])
+                for dx_, dy_, c_ in ((1, -1, "/"), (2, -1, "|"), (0, 0, "/"), (1, 0, "_"), (2, 0, "|")):
+                    put(xi + dx_, sy + dy_, c_, (150, 160, 178))
+            elif kind == "gull":
+                wing = "\\v/" if int(t * 5) % 2 else "-v-"
+                for j, c_ in enumerate(wing):
+                    put(egg["x"] + j, egg["y"], c_, (235, 240, 250))
+            elif kind == "dolphin":
+                ph = egg["ph"]
+                xi = max(0, min(W - 1, int(egg["x"])))
+                y = surf[xi] - 1 - math.sin(math.pi * ph) * max(2.0, self.hmax * 0.35)
+                spr = "_/o>" if ph < 0.4 else "--o>" if ph < 0.6 else "\\_o>"
+                for j, c_ in enumerate(spr):
+                    put(egg["x"] - 2 + j, y, c_, (170, 205, 235))
+            elif kind == "bottle":
+                xi = max(0, min(W - 1, int(egg["x"])))
+                y = surf[xi] - (1 if int(t * 2) % 2 else 0)
+                for j, c_ in enumerate("[]=o"):
+                    put(egg["x"] + j, y, c_, (140, 225, 170) if c_ != "o" else (235, 220, 190))
+            elif kind == "ufo":
+                ux, uy = egg["x"], egg["y"]
+                for j, c_ in enumerate(" .-\"\"-. "):
+                    if c_ != " ":
+                        put(ux - 4 + j, uy, c_, (200, 230, 210))
+                for j, c_ in enumerate("(_o_o_o_)"):
+                    put(ux - 4 + j, uy + 1, c_, (200, 230, 210) if c_ != "o" else (255, 240, 140))
+                if egg["age"] < 9:                          # tractor beam down to the sea
+                    for k_ in range(2, int(self.base - uy) - 1):
+                        if int(t * 6 + k_) % 3:
+                            put(ux - 1 - k_ // 3, uy + k_, "/", (120, 220, 160))
+                            put(ux + 1 + k_ // 3, uy + k_, "\\", (120, 220, 160))
 
         for x, y, vx, vy, life in self.spray:
             put(x, y, "*" if abs(vy) > 14 else "'" if vy < 0 else ".", mix(ICE, FOAM, min(1.0, life)))

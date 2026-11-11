@@ -40,7 +40,7 @@ Lineup ends that.
 - 🌊 **And honestly? It's just nice to look at.** A peripheral-vision status light you actually
   enjoy. Breakers that build, barrel and crash. Surfers who wait at the peak, take turns, drop in on
   each other, land airs and occasionally wipe out together. Fish. A reef. Shake the window and the
-  water sloshes.
+  water sloshes. Keep an eye out for rare visitors.
 
 ## The ocean, decoded
 
