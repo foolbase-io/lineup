@@ -242,9 +242,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.bgAlpha = CGFloat(opacity)
         applyPin()
         // shaking / dragging the window sloshes the sea (sent as cols/rows moved)
-        lastOrigin = window.frame.origin
-        NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: window,
-                                               queue: .main) { [weak self] _ in self?.windowMoved() }
+        // a window drag is run by the window server and only reports the move when it ends, so
+        // poll the real on-screen position instead - that's what makes shaking slosh the sea live
+        lastOrigin = screenOrigin() ?? .zero
+        Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { [weak self] _ in self?.windowMoved() }
+        if ProcessInfo.processInfo.environment["WAVES_SHAKE_TEST"] != nil {     // self-test: wiggle the window
+            var n = 0
+            Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] tm in
+                guard let self else { return }
+                var f = self.window.frame
+                f.origin.x += (n % 2 == 0 ? 70 : -70)
+                self.window.setFrameOrigin(f.origin)
+                n += 1
+                if n >= 24 { tm.invalidate() }
+            }
+        }
         view.onResize = { [weak self] c, r in self?.send("size \(c) \(r)") }
         view.onKey = { [weak self] k in self?.handleKey(k) }
         view.onClick = { [weak self] c, r in self?.clicked(c, r) }
@@ -261,7 +273,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // hidden self-test: --snapshot <png> renders the view after a few seconds and quits
         if let i = CommandLine.arguments.firstIndex(of: "--snapshot"), i + 1 < CommandLine.arguments.count {
             let path = CommandLine.arguments[i + 1]
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            let delay = Double(ProcessInfo.processInfo.environment["SNAPSHOT_DELAY"] ?? "") ?? 5
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                 if let rep = self.view.bitmapImageRepForCachingDisplay(in: self.view.bounds) {
                     self.view.cacheDisplay(in: self.view.bounds, to: rep)
                     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))
@@ -425,10 +438,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func screenOrigin() -> NSPoint? {
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(window.windowNumber))
+                as? [[String: Any]],
+              let b = list.first?[kCGWindowBounds as String],
+              let r = CGRect(dictionaryRepresentation: b as! CFDictionary) else { return nil }
+        return r.origin
+    }
+
     func windowMoved() {
-        let o = window.frame.origin
+        guard let o = screenOrigin() else { return }
         let dx = (o.x - lastOrigin.x) / view.cellW
-        let dy = -(o.y - lastOrigin.y) / view.lineH     // screen y points up, rows point down
+        let dy = (o.y - lastOrigin.y) / view.lineH      // window-server y points down, like rows
         lastOrigin = o
         if abs(dx) + abs(dy) > 0.05, abs(dx) < 400, abs(dy) < 400 {
             send(String(format: "shake %.2f %.2f", dx, dy))

@@ -449,6 +449,7 @@ class Sea:
         def sfc(x):
             return surf[max(0, min(W - 1, int(x)))]
 
+        self._assign_spots()
         for sf in self.surfers.values():
             if sf.present:
                 self._move_surfer(sf, dt, t, W, surf, geoms, g, sfc)
@@ -461,8 +462,9 @@ class Sea:
                 and abs(sf.sx - self._home_x(sf, W)) < 4 + W * 0.015)
 
     def _home_x(self, sf, W):
-        """Lineup spots: first agent at the peak, the rest further out, never on top of each other."""
-        return max(4.0, W * 0.32 - sf.slot * max(13.0, W * 0.14))
+        """Lineup spots: spot 0 is the peak, the rest further out, never on top of each other."""
+        spot = sf.spot if getattr(sf, "spot", None) is not None else sf.slot
+        return max(4.0, W * 0.32 - spot * max(13.0, W * 0.14))
 
     def _after(self, sf):
         """Whose turn is it after this surfer (round-robin over working agents)."""
@@ -473,6 +475,19 @@ class Sea:
         ids = [o.id for o in workers]
         i = ids.index(sf.id) if sf.id in ids else -1
         return ids[(i + 1) % len(ids)]
+
+    def _assign_spots(self):
+        """Whoever is closer to the beach (further right) gets the spot nearer the peak, so a surfer
+        paddling back never has to swim through someone sitting in the lineup."""
+        free = [o for o in self.surfers.values()
+                if o.present and o.sx is not None and o.ride_b is None and not o.air]
+        if not free:
+            return
+        free.sort(key=lambda o: -(o.wipe["bx"] if o.wipe else o.sx))
+        current = sorted(free, key=lambda o: (getattr(o, "spot", None) is None, getattr(o, "spot", None) or 0))
+        if [o.name for o in free] != [o.name for o in current] or any(getattr(o, "spot", None) is None for o in free):
+            for i, o in enumerate(free):
+                o.spot = i
 
     def _keep_apart(self, dt, W, gap=11.0):
         """Boards never overlap unless they're sharing a wave (drop-in) or someone is airborne."""
@@ -522,12 +537,17 @@ class Sea:
         self.shake_energy = min(12.0, self.shake_energy + m)
         for f in self.fish:
             f[0] -= dx * 0.6
+        hard = (m > 5 or self.shake_energy > 9) and self.t - getattr(self, "knock_t", -9.0) > 2.5
+        knocked = False
         for sf in self.surfers.values():
             if not sf.present or sf.sx is None or sf.wipe:
                 continue
-            sf.push -= dx * 3.0
-            if m > 5 and not sf.air and random.random() < 0.5:   # a hard yank knocks them off
+            sf.push -= dx * 3.0 * random.uniform(0.6, 1.5)          # everyone slides a little differently
+            if hard and not sf.air and random.random() < 0.6:       # a hard shake knocks them off
                 self._start_wipe(sf, self.t, direction=(-1 if dx > 0 else 1), burst=True)
+                knocked = True
+        if knocked:
+            self.knock_t = self.t
 
     def sync_agents(self, agents):
         """agents: [{id, name, mood, label, board(rgb)}] in lineup order."""
